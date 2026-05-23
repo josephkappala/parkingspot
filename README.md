@@ -1,119 +1,197 @@
-# 🛠️ Trace Template Skill
+# Parking Spot Memory
 
-This is a minimal, production-ready template for building **Trace Skills**. It includes everything you need to handle background events (Webhooks) and voice-native interactions (MCP).
+Parking Spot Memory is a Trace glasses skill that helps a user remember where they parked. It supports voice notes and active photo memories, then lets the user ask natural parking questions later.
 
----
+The skill is built from the Endless River Trace skill template and exposes:
 
-## 🚀 Quickstart
+- `POST /mcp` for active voice and active image events.
+- `POST /webhook` for signed Trace webhook events.
+- `POST /delete-user` for uninstall/data cleanup callbacks.
 
-### 1. Setup
+## What It Does
+
+The skill handles a practical glasses-first workflow:
+
+1. Save a parking location by voice.
+2. Save a parking spot by active photo.
+3. Add context to a photo memory.
+4. Ask where the car is later.
+5. Clear saved parking memories for the current server session.
+
+Example phrases:
+
+```text
+Remember that I parked the car at gate number three.
+Where did I park the car?
+Find my parking spot.
+Take a photo and remember this location.
+Clear all memories.
+```
+
+## How It Works
+
+Trace routes active events to the MCP endpoint:
+
+```text
+Trace glasses/app -> Trace platform -> POST /mcp -> handle_dialog -> spoken response + feed item
+```
+
+Supported triggers in `manifest.json`:
+
+- `instant.message` with `routing_mode: active`
+- `instant.image` with `routing_mode: active`
+
+The MCP tool is named `handle_dialog`, which is the preferred Trace entrypoint for conversational skills.
+
+## Local Setup
+
+Requirements:
+
+- Node.js 18+
+- npm
+- A Trace dashboard skill with an HMAC secret
+
+Install dependencies:
+
 ```bash
-mkdir trace_skill
-cd trace_skill
-git clone git@github.com:EndlessRiverAI/trace-template-skill.git
-cd trace-template-skill
 npm install
+```
+
+Create `.env`:
+
+```bash
 cp .env.example .env
 ```
-Fill in your `TRACE_HMAC_SECRET` in `.env` once you register your skill.
 
-### 2. Local Development
-```bash
-npm run dev
+Set the HMAC secret from the Trace dashboard:
+
+```env
+TRACE_HMAC_SECRET=your_dashboard_hmac_secret
+TRACE_SKILL_ID=your_skill_id_here
+BRAIN_BASE_URL=https://brain.endlessriver.ai
+PORT=3001
+NODE_ENV=development
 ```
-In a separate terminal, expose your local server to the internet using **localhost.run**:
+
+Build and run:
+
 ```bash
-ssh -R 80:localhost:3000 nokey@localhost.run
+npm run build
+node dist/index.js
 ```
-*Take note of the `https` URL localhost.run provides (e.g., `https://21231e1.localhost.run`).*
 
----
+The local server listens on:
 
-## 📝 Manifest & Registration
+```text
+http://localhost:3001
+```
 
-Your skill is defined by the `manifest.json`. You must submit this manifest via the **Trace Developer Dashboard**.
+## Public URL For Trace
 
-### Key Fields:
-- **`name`**: Human-readable name of your skill.
-- **`interface`**: `hybrid` allows both Webhooks and MCP.
-- **`triggers`**: Defines what events your skill "listens" to. By default, it listens to `instant.message` (voice).
-- **`permissions`**: List of permissions your skill needs. Common ones:
-    - `notification.send`: (Implicit) Ability to sent toasts/TTS.
-    - `user.profile.read`: Ability to see the user's name.
-    - `user.location.read`: Ability to see city/country/GPS.
-- **`domains`**: Natural language descriptions that tell the Trace Router when to send an event to your skill.
-- **`allowedTools`**: Declares which platform-managed tools (like `mail.send`) your skill can use.
+Trace needs a public HTTPS URL. For quick testing, use a tunnel:
 
-### Registration Steps:
-1. Go to **Dashboard** → **Skills** → **Create New Skill**.
-2. Paste your localhost.run URL into the **Webhook** and **MCP** endpoint fields.
-3. Use the contents of `manifest.json` as a guide for your configuration.
-    Sample manifest for this skill:
-     ```jsx
-    {
-      "name": "Template Skill",
-      "version": "1.0.0",
-      "interface": "hybrid",
-      "endpoints": {
-        "webhook": "https://your-domain.localhost.run/webhook",
-        "mcp": "https://your-domain.localhost.run/mcp"
-      },
-      "triggers": [
-        { "channel": "instant.message", "routing_mode": "active" }
-      ],
-      "domains": {
-        "general": "Handle general greetings and tests for the template skill. Match utterances like 'test template' or 'hello from template'."
-      },
-      "permissions": [
-        "notification.send",
-        "user.profile.read",
-        "user.location.read"
-      ],
-      "allowedTools": [
-        "mail.send"
-      ],
-      "data_retention": {
-        "max_days": 30,
-        "deletion_webhook": "https://your-domain.localhost.run/delete-user"
-      }
-    }
-    ```
-4. **Save** and copy the **HMAC Secret** into your `.env` file.
+```bash
+ssh -R 80:localhost:3001 nokey@localhost.run
+```
 
----
+localhost.run will print a URL like:
 
-## 🔌 Using Platform Actions
+```text
+https://example-subdomain.lhr.life
+```
 
-This template shows you how to return **responses** that trigger actions on the user's glasses:
+Update the Trace dashboard endpoints:
 
-- **Notifications**: Toast messages and TTS.
-- **Feed Items**: Logging activity to the daily feed.
-- **Platform Tools**: Sending emails or creating calendar events via `tool_call`.
+```text
+MCP:
+https://example-subdomain.lhr.life/mcp
 
-Check `src/index.ts` to see how these are constructed.
+Webhook:
+https://example-subdomain.lhr.life/webhook
 
----
+Deletion webhook:
+https://example-subdomain.lhr.life/delete-user
+```
 
-## 🔒 Security
+Important: free localhost.run URLs can expire or rotate. If the dashboard returns `no tunnel here`, create a new tunnel and update the dashboard endpoints.
 
-- **HMAC Verification**: All requests from Trace are signed. The `src/hmac.ts` utility ensures only legitimate Trace events are processed.
-- **Proxy IDs**: `user.id` is a stable, unique proxy for that specific user. Use it as a primary key in your database.
-- **User Info**: If you have the right permissions, the `user` object will contain `name`, `timezone`, and `location`. Timezone and Locale are always provided.
+## Dashboard Configuration
 
----
+Use these values when registering/importing the skill:
 
-## 🚢 Deployment
+- Name: `Parking Spot Memory`
+- Interface: `Hybrid`
+- Triggers:
+  - `instant.message`, active
+  - `instant.image`, active
+- Permissions:
+  - `user.profile.read`
+- Allowed tools: none
 
-Ready to go live? Check out the `deploy.sh` script for instructions on deploying to **Railway** or **Vercel**.
+Domain description:
 
-1. Deploy your server.
-2. Get the new production URL.
-3. Update your endpoints in the **Trace Developer Dashboard**.
+```text
+Handle voice commands and active photos for remembering where the user parked their car or vehicle. Example phrases: 'remember that I parked at gate number three', 'save this parking spot', 'take a photo and remember this location', 'where did I park the car', 'find my parking spot', and 'clear all parking memories'.
+```
 
----
+## Manual MCP Tests
 
-### Need Help?
-Reach out to **ishaan@endlessriver.ai** or check the **[Developer Reference](https://endlessriver.ai/dashboard/docs)** (or `/dashboard/docs` on your Trace domain) for more details.
+List available tools:
 
-You can also follow the full **[Skill Builder Playbook](./docs/buildathon/SKILL_BUILDER_PLAYBOOK.md)** for a deep dive.
-**Happy Building! 🛠️**
+```bash
+curl -s http://localhost:3001/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Save a parking memory:
+
+```bash
+curl -s http://localhost:3001/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"handle_dialog","arguments":{"utterance":"Remember that I parked the car at gate number three.","userId":"demo-user"}}}'
+```
+
+Recall a parking memory:
+
+```bash
+curl -s http://localhost:3001/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"handle_dialog","arguments":{"utterance":"Where did I park the car?","userId":"demo-user"}}}'
+```
+
+Mock an active photo memory:
+
+```bash
+curl -s http://localhost:3001/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"handle_dialog","arguments":{"utterance":"","userId":"demo-user","items":[{"id":"item_1","url":"https://example.com/parking.jpg","mimeType":"image/jpeg","imageDescription":"A parking garage entrance with a blue gate number three sign"}],"context":{"source":"instant_image","hasImage":true,"imageDescription":"A parking garage entrance with a blue gate number three sign"}}}}'
+```
+
+## Demo Script
+
+Use this order for the most reliable demo:
+
+1. Say: `Clear all memories.`
+2. Say: `Remember that I parked the car at gate number three.`
+3. Ask: `Where did I park the car?`
+4. Trigger active image/photo flow.
+5. Say: `This is where I parked.`
+6. Ask: `Find my parking spot.`
+
+## Current Limitations
+
+- Memories are stored in process memory only and reset when the server restarts.
+- The skill uses Trace-provided `imageDescription` for photo memory descriptions.
+- Free tunnel URLs may expire. Use a deployed HTTPS host for stable demos.
+- The current implementation is optimized for a buildathon demo, not long-term production storage.
+
+## Production Improvements
+
+Recommended next steps:
+
+- Add persistent storage keyed by Trace proxy `user.id`.
+- Deploy to a stable host such as Render, Railway, Fly.io, or a VPS.
+- Add a small health endpoint.
+- Add unit tests around intent parsing and response shapes.
+- Replace tunnel URLs in `manifest.json` with production URLs before final submission.

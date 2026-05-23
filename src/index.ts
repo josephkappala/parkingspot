@@ -11,6 +11,334 @@ const TRACE_HMAC_SECRET = process.env.TRACE_HMAC_SECRET || '';
 const TRACE_SKILL_ID = process.env.TRACE_SKILL_ID || '';
 const BRAIN_BASE_URL = process.env.BRAIN_BASE_URL || 'https://brain.endlessriver.ai';
 
+type MemoryEntry = {
+  id: string;
+  type: 'text' | 'photo';
+  text: string;
+  createdAt: string;
+  imageUrl?: string;
+  contextNote?: string;
+};
+
+type SkillResponse = {
+  spoken: string;
+  feedTitle: string;
+  feedStory: string;
+  embeddedResponses?: any[];
+};
+
+const memoriesByUser = new Map<string, MemoryEntry[]>();
+const PHOTO_CONTEXT_KEY = 'photo_memory_context';
+
+function getUserId(args: any) {
+  return args?.user?.id || args?.userId || 'demo-user';
+}
+
+function createMemoryId() {
+  return `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function cleanMemoryText(utterance: string) {
+  return utterance
+    .replace(/^(hey trace,?\s*)?/i, '')
+    .replace(/^(please\s*)?(remember this location|remember this place|save this location|save this place|remember that|remind me that|note that|log that|save that|remember)[,\s]*/i, '')
+    .replace(/\bokay$/i, '')
+    .trim()
+    .replace(/[.?!]+$/, '');
+}
+
+function getImageItem(args: any) {
+  return Array.isArray(args?.items) && args.items.length > 0 ? args.items[0] : null;
+}
+
+function getImageDescription(args: any) {
+  const item = getImageItem(args);
+  return (
+    item?.imageDescription ||
+    args?.context?.imageDescription ||
+    'a photo from your Trace glasses'
+  );
+}
+
+function shortText(text: string, maxLength = 140) {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trim()}...`;
+}
+
+function formatMemoryForRecall(entry: MemoryEntry) {
+  if (entry.type === 'photo') {
+    const context = entry.contextNote ? ` Context: ${entry.contextNote}` : '';
+    return `Photo: ${entry.text}.${context}`;
+  }
+
+  return entry.text;
+}
+
+function formatParkingMemory(entry: MemoryEntry) {
+  if (entry.type === 'photo') {
+    const context = entry.contextNote ? ` ${entry.contextNote}.` : '';
+    return `I saved a photo memory: ${entry.text}.${context}`;
+  }
+
+  return entry.text;
+}
+
+function findMemoryByKeywords(entries: MemoryEntry[], keywords: string[]) {
+  return entries
+    .slice()
+    .reverse()
+    .find((entry) => {
+      const searchable = `${entry.text} ${entry.contextNote || ''}`.toLowerCase();
+      return keywords.some((keyword) => searchable.includes(keyword));
+    });
+}
+
+function looksLikeParkingLookup(utterance: string) {
+  const normalized = utterance.toLowerCase().replace(/[.?!]+$/g, '').trim();
+  return (
+    normalized.includes('where did i park') ||
+    normalized.includes('where is my car') ||
+    normalized.includes('where is the car') ||
+    /\bwhere\b.*\b(park|parked|parking|car|vehicle)\b/.test(normalized) ||
+    /\b(find|locate|take me to)\b.*\b(car|vehicle|parking|spot)\b/.test(normalized) ||
+    /\bwhere\b.*\b(my spot|the spot|this location|this place)\b/.test(normalized) ||
+    /^(park|parked|parking)\s+(the\s+|my\s+)?(car|vehicle)$/.test(normalized) ||
+    /^(repark|repart|report)\s+(the\s+|my\s+)?(car|vehicle)$/.test(normalized) ||
+    /^(car|vehicle)\s+(location|parking)$/.test(normalized) ||
+    /^(where is|find|locate)\s+(my\s+)?(spot|parking spot)$/.test(normalized)
+  );
+}
+
+function looksLikeParkingSave(utterance: string) {
+  const normalized = utterance.toLowerCase().replace(/[.?!]+$/g, '').trim();
+  return (
+    /^(remember|save|note|log|remind me)\b/.test(normalized) ||
+    /\b(i\s+)?parked\b/.test(normalized) ||
+    /\bparking\s+(spot|location|garage|level|floor|gate)\b/.test(normalized) ||
+    /\b(car|vehicle)\b.*\b(gate|level|floor|row|spot|garage)\b/.test(normalized) ||
+    /\bremember\b.*\b(location|place|spot)\b/.test(normalized)
+  );
+}
+
+function isExplicitSaveCommand(utterance: string) {
+  const normalized = utterance.toLowerCase().replace(/[.?!]+$/g, '').trim();
+  return /^(remember|save|note|log|remind me)\b/.test(normalized);
+}
+
+function buildPhotoContextResponse(args: any): SkillResponse | null {
+  const pendingContext = args?.pending_context;
+  if (pendingContext?.context_key !== PHOTO_CONTEXT_KEY) return null;
+
+  const userId = getUserId(args);
+  const utterance = String(args?.utterance || '').trim();
+  const memoryId = pendingContext?.context_payload?.memory_id;
+  const existing = memoriesByUser.get(userId) || [];
+  const target = existing.find((entry) => entry.id === memoryId);
+
+  if (!target || target.type !== 'photo') {
+    return {
+      spoken: 'I could not find that photo memory, but you can capture it again.',
+      feedTitle: 'Photo Context Not Added',
+      feedStory: utterance || 'No context provided.',
+      embeddedResponses: [],
+    };
+  }
+
+  if (!utterance || /^(skip|no|nope|nothing|no context|that's all)$/i.test(utterance)) {
+    return {
+      spoken: 'No problem. I saved the photo memory as is.',
+      feedTitle: 'Photo Memory Saved',
+      feedStory: target.text,
+      embeddedResponses: [],
+    };
+  }
+
+  target.contextNote = cleanMemoryText(utterance) || utterance;
+  memoriesByUser.set(userId, existing);
+
+  return {
+    spoken: 'Got it. I added that parking context to the photo memory.',
+    feedTitle: 'Parking Context Added',
+    feedStory: `${target.text}\nContext: ${target.contextNote}`,
+    embeddedResponses: [],
+  };
+}
+
+function buildPhotoMemoryResponse(args: any): SkillResponse | null {
+  const imageItem = getImageItem(args);
+  if (!imageItem && !args?.context?.hasImage) return null;
+
+  const userId = getUserId(args);
+  const utterance = String(args?.utterance || '').trim();
+  const imageDescription = shortText(getImageDescription(args), 170);
+  const imageUrl = imageItem?.url;
+  const existing = memoriesByUser.get(userId) || [];
+  const entry: MemoryEntry = {
+    id: createMemoryId(),
+    type: 'photo',
+    text: imageDescription,
+    imageUrl,
+    contextNote: utterance ? cleanMemoryText(utterance) || utterance : undefined,
+    createdAt: new Date().toISOString(),
+  };
+
+  memoriesByUser.set(userId, [...existing, entry].slice(-20));
+
+  const feedStory = [
+    `I see: ${imageDescription}`,
+    entry.contextNote ? `User context: ${entry.contextNote}` : null,
+    imageUrl ? `Image: ${imageUrl}` : null,
+  ].filter(Boolean).join('\n');
+
+  const responses: any[] = [
+    {
+      type: 'feed_item',
+      content: {
+        feed_type: 'skill',
+        title: 'Parking Photo Saved',
+        story: feedStory,
+      },
+    },
+  ];
+
+  if (!entry.contextNote) {
+    responses.push({
+      type: 'await_input',
+      content: {
+        question: 'Anything you want me to remember about this parking spot?',
+        context_key: PHOTO_CONTEXT_KEY,
+        context_payload: {
+          memory_id: entry.id,
+          image_description: imageDescription,
+          image_url: imageUrl,
+        },
+        allow_image: false,
+        timeout_ms: 300000,
+      },
+    });
+  }
+
+  return {
+    spoken: `Parking photo saved. I see: ${imageDescription}.${entry.contextNote ? '' : ' Anything you want me to remember about this spot?'}`,
+    feedTitle: 'Parking Photo Saved',
+    feedStory,
+    embeddedResponses: responses,
+  };
+}
+
+function buildMemoryResponse(args: any): SkillResponse {
+  const photoContextResponse = buildPhotoContextResponse(args);
+  if (photoContextResponse) return photoContextResponse;
+
+  const photoMemoryResponse = buildPhotoMemoryResponse(args);
+  if (photoMemoryResponse) return photoMemoryResponse;
+
+  const utterance = String(args?.utterance || '').trim();
+  const userId = getUserId(args);
+  const existing = memoriesByUser.get(userId) || [];
+  const normalized = utterance.toLowerCase();
+
+  if (!utterance) {
+    return {
+      spoken: 'I can remember where you parked. Try saying, remember that I parked near gate 3.',
+      feedTitle: 'Parking Assistant Ready',
+      feedStory: 'Waiting for a parking memory to save.',
+    };
+  }
+
+  if (/\b(clear|delete|forget|reset)\b.*\b(all|everything|my notes|memories|our memories|parking memories)\b/.test(normalized)) {
+    memoriesByUser.set(userId, []);
+    return {
+      spoken: 'Done. I cleared your saved parking memories for this session.',
+      feedTitle: 'Parking Memories Cleared',
+      feedStory: 'All session parking memories were cleared.',
+    };
+  }
+
+  if (looksLikeParkingLookup(utterance) || (!isExplicitSaveCommand(utterance) && /\b(park|parking|car|vehicle|spot|gate|garage)\b/.test(normalized))) {
+    const parkingMemory = findMemoryByKeywords(existing, ['park', 'parked', 'parking', 'car', 'gate', 'level', 'floor', 'garage', 'spot']);
+    if (!parkingMemory) {
+      return {
+        spoken: 'I do not have a parking memory saved yet.',
+        feedTitle: 'No Parking Memory',
+        feedStory: 'Try saying “remember that I parked the car at gate number three.”',
+      };
+    }
+
+    return {
+      spoken: `You told me: ${formatParkingMemory(parkingMemory)}.`,
+      feedTitle: 'Parking Memory',
+      feedStory: formatMemoryForRecall(parkingMemory),
+    };
+  }
+
+  if (/\b(what|read|list|show|recall)\b.*\b(remember|memories|notes|saved)\b/.test(normalized)) {
+    if (existing.length === 0) {
+      return {
+        spoken: 'You do not have any saved memories yet.',
+        feedTitle: 'No Saved Memories',
+        feedStory: 'Say “remember that...” to save your first note.',
+      };
+    }
+
+    const latest = existing.slice(-3).map((entry, index) => `${index + 1}. ${formatMemoryForRecall(entry)}`).join(' ');
+    return {
+      spoken: `Here are your latest memories. ${latest}`,
+      feedTitle: 'Latest Memories',
+      feedStory: existing.slice(-5).map((entry) => `- ${formatMemoryForRecall(entry)}`).join('\n'),
+    };
+  }
+
+  const memoryText = cleanMemoryText(utterance);
+  if (memoryText.length < 3) {
+    return {
+      spoken: 'I did not catch the parking detail. Try saying, remember that I parked the car on level two.',
+      feedTitle: 'Parking Memory Not Saved',
+      feedStory: utterance,
+    };
+  }
+
+  const entry: MemoryEntry = {
+    id: createMemoryId(),
+    type: 'text',
+    text: memoryText,
+    createdAt: new Date().toISOString()
+  };
+  memoriesByUser.set(userId, [...existing, entry].slice(-20));
+
+  return {
+    spoken: looksLikeParkingSave(utterance)
+      ? `Got it. I will remember where you parked: ${memoryText}.`
+      : `Got it. I will remember: ${memoryText}.`,
+    feedTitle: looksLikeParkingSave(utterance) ? 'Parking Memory Saved' : 'Memory Saved',
+    feedStory: memoryText,
+  };
+}
+
+function buildContent(response: SkillResponse) {
+  const content: any[] = [{ type: 'text', text: response.spoken }];
+  const embeddedResponses = response.embeddedResponses ?? [
+    {
+      type: 'feed_item',
+      content: {
+        feed_type: 'skill',
+        title: response.feedTitle,
+        story: response.feedStory
+      }
+    }
+  ];
+
+  if (embeddedResponses.length > 0) {
+    content.push({
+      type: 'embedded_responses',
+      responses: embeddedResponses
+    });
+  }
+
+  return content;
+}
+
 // Capture rawBody BEFORE JSON parsing — required for HMAC verification.
 app.use(
   express.json({
@@ -61,6 +389,15 @@ async function processEvent(opts: {
 // Used for dialog turns (voice queries).
 app.post('/mcp', async (req: Request, res: Response) => {
   const { jsonrpc, method, params, id } = req.body;
+  console.log('[MCP]', JSON.stringify({
+    method,
+    tool: params?.name,
+    utterance: params?.arguments?.utterance,
+    userId: params?.arguments?.userId || params?.arguments?.user?.id,
+    hasImage: Boolean(params?.arguments?.items?.length || params?.arguments?.context?.hasImage),
+    pendingContext: params?.arguments?.pending_context?.context_key,
+  }));
+
   if (jsonrpc !== '2.0') return res.status(400).send('Invalid JSON-RPC');
 
   if (method === 'tools/list') {
@@ -71,11 +408,16 @@ app.post('/mcp', async (req: Request, res: Response) => {
         tools: [
           {
             name: 'handle_dialog',
-            description: 'My main dialog tool.',
+            description: 'Save and recall where the user parked using voice notes and active photos from Trace glasses.',
             inputSchema: {
               type: 'object',
               properties: {
-                utterance: { type: 'string' }
+                utterance: { type: 'string' },
+                userId: { type: 'string' },
+                user: { type: 'object' },
+                items: { type: 'array' },
+                context: { type: 'object' },
+                pending_context: { type: 'object' }
               }
             }
           }
@@ -85,23 +427,33 @@ app.post('/mcp', async (req: Request, res: Response) => {
   }
 
   if (method === 'tools/call') {
-    const { name, arguments: args } = params;
+    const { name, arguments: args = {} } = params || {};
     if (name === 'handle_dialog') {
-      return res.json({
-        jsonrpc: '2.0',
-        id,
-        result: {
-          content: [
-            { type: 'text', text: `You said: ${args.utterance}` },
-            {
-              type: 'embedded_responses',
-              responses: [
-                { type: 'feed_item', content: { title: 'Dialog Handled', story: args.utterance } }
-              ]
-            }
-          ]
-        }
-      });
+      try {
+        const response = buildMemoryResponse(args);
+
+        return res.json({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: buildContent(response)
+          }
+        });
+      } catch (err) {
+        console.error('[MCP] handler error:', err);
+        return res.json({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: 'I hit a small error, but the memory skill is still running. Please try that one more time.'
+              }
+            ]
+          }
+        });
+      }
     }
   }
 

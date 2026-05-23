@@ -1,29 +1,25 @@
 {
-  "name": "Template Skill",
+  "name": "Parking Spot Memory",
+  "description": "Save where you parked using Trace glasses voice or photos, then ask where the car is later.",
   "version": "1.0.0",
   "interface": "hybrid",
   "endpoints": {
-    "webhook": "https://your-domain.ngrok-free.app/webhook",
-    "mcp": "https://your-domain.ngrok-free.app/mcp"
+    "webhook": "https://your-public-host.example/webhook",
+    "mcp": "https://your-public-host.example/mcp"
   },
   "triggers": [
     { "channel": "instant.message", "routing_mode": "active" },
-    { "channel": "instant.image",      "routing_mode": "active" },
-    { "channel": "media.photo",        "routing_mode": "passive" }
+    { "channel": "instant.image", "routing_mode": "active" }
   ],
   "domains": {
-    "general": "Handle general greetings and tests for the template skill. Match utterances like 'test template' or 'hello from template'."
+    "parking_memory": "Handle voice commands and active photos for remembering where the user parked their car or vehicle. Example phrases: 'remember that I parked at gate number three', 'save this parking spot', 'take a photo and remember this location', 'where did I park the car', 'find my parking spot', and 'clear all parking memories'."
   },
   "permissions": [
-    "notification.send",
-    "user.profile.read",
-    "user.location.read"
+    "user.profile.read"
   ],
-  "allowedTools": [
-    "mail.send"
-  ],
-  "data_retention": {
+  "allowedTools": [],
+  "dataRetention": {
     "max_days": 30,
-    "deletion_webhook": "https://your-domain.ngrok-free.app/delete-user"
+    "deletion_webhook": "https://your-public-host.example/delete-user"
   }
 }

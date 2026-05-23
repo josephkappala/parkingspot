@@ -1,7 +1,7 @@
 {
-  "name": "trace-template-skill",
+  "name": "parking-spot-memory",
   "version": "1.0.0",
-  "description": "A minimal Trace Skill template for buildathons.",
+  "description": "A Trace glasses skill for remembering and recalling where you parked.",
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
