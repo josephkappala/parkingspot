@@ -46,7 +46,7 @@ Remember that I parked the car at gate number three.
 Expected response:
 
 ```text
-Got it. I will remember where you parked: I parked the car at gate number three.
+Got it. I will remember where you parked: vehicle: car, gate three.
 ```
 
 Then fire:
@@ -58,7 +58,7 @@ Where did I park the car?
 Expected response:
 
 ```text
-You told me: I parked the car at gate number three.
+You told me: vehicle: car, gate three.
 ```
 
 ## 5. Test Photo Flow
@@ -99,7 +99,21 @@ If Trace says the skill is unavailable or cannot save:
 3. Do not use old `Re-fire` events after changing URLs.
 4. Confirm the local server is still running on port `3001`.
 
-## 7. Approval Notes
+## 7. Persistence Check
+
+Memories are persisted to:
+
+```text
+data/parking-memories.json
+```
+
+This file is ignored by Git. Restarting the server should not erase saved memories unless you say:
+
+```text
+Clear all memories.
+```
+
+## 8. Approval Notes
 
 Use this in the review notes field:
 

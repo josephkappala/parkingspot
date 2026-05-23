@@ -17,6 +17,7 @@ The skill handles a practical glasses-first workflow:
 3. Add context to a photo memory.
 4. Ask where the car is later.
 5. Clear saved parking memories for the current server session.
+6. Extract structured details such as vehicle, gate, level, floor, row, spot, and landmark.
 
 Example phrases:
 
@@ -181,7 +182,7 @@ Use this order for the most reliable demo:
 
 ## Current Limitations
 
-- Memories are stored in process memory only and reset when the server restarts.
+- Memories are stored in `data/parking-memories.json` and survive server restarts.
 - The skill uses Trace-provided `imageDescription` for photo memory descriptions.
 - Free tunnel URLs may expire. Use a deployed HTTPS host for stable demos.
 - The current implementation is optimized for a buildathon demo, not long-term production storage.
@@ -190,8 +191,8 @@ Use this order for the most reliable demo:
 
 Recommended next steps:
 
-- Add persistent storage keyed by Trace proxy `user.id`.
 - Deploy to a stable host such as Render, Railway, Fly.io, or a VPS.
 - Add a small health endpoint.
 - Add unit tests around intent parsing and response shapes.
+- Move from JSON file storage to SQLite/Postgres/Supabase for multi-instance production hosting.
 - Replace tunnel URLs in `manifest.json` with production URLs before final submission.

@@ -1,6 +1,8 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { verifyTraceSignature } from './hmac';
 
 dotenv.config();
@@ -10,6 +12,18 @@ const PORT = process.env.PORT || 3000;
 const TRACE_HMAC_SECRET = process.env.TRACE_HMAC_SECRET || '';
 const TRACE_SKILL_ID = process.env.TRACE_SKILL_ID || '';
 const BRAIN_BASE_URL = process.env.BRAIN_BASE_URL || 'https://brain.endlessriver.ai';
+const DATA_DIR = path.join(process.cwd(), 'data');
+const MEMORY_STORE_PATH = path.join(DATA_DIR, 'parking-memories.json');
+
+type ParkingDetails = {
+  vehicle?: string;
+  gate?: string;
+  level?: string;
+  floor?: string;
+  row?: string;
+  spot?: string;
+  landmark?: string;
+};
 
 type MemoryEntry = {
   id: string;
@@ -18,6 +32,7 @@ type MemoryEntry = {
   createdAt: string;
   imageUrl?: string;
   contextNote?: string;
+  details?: ParkingDetails;
 };
 
 type SkillResponse = {
@@ -27,8 +42,37 @@ type SkillResponse = {
   embeddedResponses?: any[];
 };
 
-const memoriesByUser = new Map<string, MemoryEntry[]>();
 const PHOTO_CONTEXT_KEY = 'photo_memory_context';
+
+function loadMemories() {
+  try {
+    if (!fs.existsSync(MEMORY_STORE_PATH)) return new Map<string, MemoryEntry[]>();
+    const parsed = JSON.parse(fs.readFileSync(MEMORY_STORE_PATH, 'utf8')) as Record<string, MemoryEntry[]>;
+    return new Map(Object.entries(parsed));
+  } catch (err) {
+    console.error('[Storage] Could not load parking memories:', err);
+    return new Map<string, MemoryEntry[]>();
+  }
+}
+
+const memoriesByUser = loadMemories();
+
+function persistMemories() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(
+      MEMORY_STORE_PATH,
+      JSON.stringify(Object.fromEntries(memoriesByUser), null, 2)
+    );
+  } catch (err) {
+    console.error('[Storage] Could not save parking memories:', err);
+  }
+}
+
+function saveUserMemories(userId: string, entries: MemoryEntry[]) {
+  memoriesByUser.set(userId, entries.slice(-20));
+  persistMemories();
+}
 
 function getUserId(args: any) {
   return args?.user?.id || args?.userId || 'demo-user';
@@ -66,16 +110,68 @@ function shortText(text: string, maxLength = 140) {
   return `${normalized.slice(0, maxLength - 3).trim()}...`;
 }
 
+function extractParkingDetails(text: string): ParkingDetails {
+  const normalized = text.toLowerCase();
+  const details: ParkingDetails = {};
+
+  if (/\b(bike|motorcycle|scooter)\b/.test(normalized)) details.vehicle = 'bike';
+  else if (/\btruck\b/.test(normalized)) details.vehicle = 'truck';
+  else if (/\bcar|vehicle\b/.test(normalized)) details.vehicle = 'car';
+
+  const gate = normalized.match(/\bgate\s+(?:number\s+)?([a-z0-9-]+)/i);
+  if (gate) details.gate = gate[1];
+
+  const level = normalized.match(/\b(?:level|lvl)\s+([a-z0-9-]+)/i);
+  if (level) details.level = level[1];
+
+  const floor = normalized.match(/\b(?:floor|basement)\s+([a-z0-9-]+)/i);
+  if (floor) details.floor = floor[1];
+
+  const row = normalized.match(/\brow\s+([a-z0-9-]+)/i);
+  if (row) details.row = row[1];
+
+  const spot = normalized.match(/\b(?:spot|slot)\s+(?:number\s+)?([a-z0-9-]+)/i);
+  if (spot && !['at', 'in', 'near', 'on'].includes(spot[1])) details.spot = spot[1];
+
+  const landmark = normalized.match(/\bnear\s+(?:the\s+|a\s+|an\s+)?(.+?)(?:\s+at\b|\s+on\b|\.|,|$)/i);
+  if (landmark) details.landmark = shortText(landmark[1], 80);
+
+  return details;
+}
+
+function mergeParkingDetails(...detailSets: Array<ParkingDetails | undefined>) {
+  return Object.assign({}, ...detailSets.filter(Boolean));
+}
+
+function formatDetails(details?: ParkingDetails) {
+  if (!details || Object.keys(details).length === 0) return '';
+  const parts = [
+    details.vehicle ? `vehicle: ${details.vehicle}` : null,
+    details.gate ? `gate ${details.gate}` : null,
+    details.level ? `level ${details.level}` : null,
+    details.floor ? `floor ${details.floor}` : null,
+    details.row ? `row ${details.row}` : null,
+    details.spot ? `spot ${details.spot}` : null,
+    details.landmark ? `near ${details.landmark}` : null,
+  ].filter(Boolean);
+
+  return parts.join(', ');
+}
+
 function formatMemoryForRecall(entry: MemoryEntry) {
+  const details = formatDetails(entry.details);
   if (entry.type === 'photo') {
     const context = entry.contextNote ? ` Context: ${entry.contextNote}` : '';
-    return `Photo: ${entry.text}.${context}`;
+    return `Photo: ${entry.text}.${context}${details ? ` Details: ${details}.` : ''}`;
   }
 
-  return entry.text;
+  return details ? `${entry.text}. Details: ${details}.` : entry.text;
 }
 
 function formatParkingMemory(entry: MemoryEntry) {
+  const details = formatDetails(entry.details);
+  if (details) return details;
+
   if (entry.type === 'photo') {
     const context = entry.contextNote ? ` ${entry.contextNote}.` : '';
     return `I saved a photo memory: ${entry.text}.${context}`;
@@ -155,12 +251,13 @@ function buildPhotoContextResponse(args: any): SkillResponse | null {
   }
 
   target.contextNote = cleanMemoryText(utterance) || utterance;
-  memoriesByUser.set(userId, existing);
+  target.details = mergeParkingDetails(target.details, extractParkingDetails(target.contextNote));
+  saveUserMemories(userId, existing);
 
   return {
     spoken: 'Got it. I added that parking context to the photo memory.',
     feedTitle: 'Parking Context Added',
-    feedStory: `${target.text}\nContext: ${target.contextNote}`,
+    feedStory: `${target.text}\nContext: ${target.contextNote}\nDetails: ${formatDetails(target.details) || 'none'}`,
     embeddedResponses: [],
   };
 }
@@ -180,14 +277,19 @@ function buildPhotoMemoryResponse(args: any): SkillResponse | null {
     text: imageDescription,
     imageUrl,
     contextNote: utterance ? cleanMemoryText(utterance) || utterance : undefined,
+    details: mergeParkingDetails(
+      extractParkingDetails(imageDescription),
+      utterance ? extractParkingDetails(utterance) : undefined
+    ),
     createdAt: new Date().toISOString(),
   };
 
-  memoriesByUser.set(userId, [...existing, entry].slice(-20));
+  saveUserMemories(userId, [...existing, entry]);
 
   const feedStory = [
     `I see: ${imageDescription}`,
     entry.contextNote ? `User context: ${entry.contextNote}` : null,
+    formatDetails(entry.details) ? `Details: ${formatDetails(entry.details)}` : null,
     imageUrl ? `Image: ${imageUrl}` : null,
   ].filter(Boolean).join('\n');
 
@@ -248,7 +350,7 @@ function buildMemoryResponse(args: any): SkillResponse {
   }
 
   if (/\b(clear|delete|forget|reset)\b.*\b(all|everything|my notes|memories|our memories|parking memories)\b/.test(normalized)) {
-    memoriesByUser.set(userId, []);
+    saveUserMemories(userId, []);
     return {
       spoken: 'Done. I cleared your saved parking memories for this session.',
       feedTitle: 'Parking Memories Cleared',
@@ -303,16 +405,18 @@ function buildMemoryResponse(args: any): SkillResponse {
     id: createMemoryId(),
     type: 'text',
     text: memoryText,
+    details: extractParkingDetails(memoryText),
     createdAt: new Date().toISOString()
   };
-  memoriesByUser.set(userId, [...existing, entry].slice(-20));
+  saveUserMemories(userId, [...existing, entry]);
 
+  const details = formatDetails(entry.details);
   return {
     spoken: looksLikeParkingSave(utterance)
-      ? `Got it. I will remember where you parked: ${memoryText}.`
+      ? `Got it. I will remember where you parked: ${details || memoryText}.`
       : `Got it. I will remember: ${memoryText}.`,
     feedTitle: looksLikeParkingSave(utterance) ? 'Parking Memory Saved' : 'Memory Saved',
-    feedStory: memoryText,
+    feedStory: details ? `${memoryText}\nDetails: ${details}` : memoryText,
   };
 }
 
