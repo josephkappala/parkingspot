@@ -217,7 +217,7 @@ function formatMemoryForRecall(entry: MemoryEntry) {
 
 function formatParkingMemory(entry: MemoryEntry) {
   const details = formatDetails(entry.details);
-  const location = entry.location ? ' I also saved the map location.' : '';
+  const location = entry.location ? '. I also saved the map location' : '';
   if (details) return `${details}${location}`.trim();
 
   if (entry.type === 'photo') {
@@ -238,14 +238,30 @@ function findMemoryByKeywords(entries: MemoryEntry[], keywords: string[]) {
     });
 }
 
+function findLatestLocatedMemory(entries: MemoryEntry[]) {
+  return entries
+    .slice()
+    .reverse()
+    .find((entry) => entry.location && !looksLikeDirectionsRequest(`${entry.text} ${entry.contextNote || ''}`));
+}
+
+function looksLikeDirectionsRequest(utterance: string) {
+  const normalized = utterance.toLowerCase().replace(/[.?!]+$/g, '').trim();
+  return (
+    /\b(guide|navigate|directions?|route|walk|walking|take me|lead me|bring me)\b.*\b(location|place|spot|car|vehicle|parking|there)\b/.test(normalized) ||
+    /\b(how do i|get me|go back)\b.*\b(location|place|spot|car|vehicle|parking|there)\b/.test(normalized)
+  );
+}
+
 function looksLikeParkingLookup(utterance: string) {
   const normalized = utterance.toLowerCase().replace(/[.?!]+$/g, '').trim();
   return (
     normalized.includes('where did i park') ||
     normalized.includes('where is my car') ||
     normalized.includes('where is the car') ||
+    looksLikeDirectionsRequest(utterance) ||
     /\bwhere\b.*\b(park|parked|parking|car|vehicle)\b/.test(normalized) ||
-    /\b(find|locate|take me to)\b.*\b(car|vehicle|parking|spot)\b/.test(normalized) ||
+    /\b(find|locate|take me to)\b.*\b(car|vehicle|parking|spot|location|place)\b/.test(normalized) ||
     /\bwhere\b.*\b(my spot|the spot|this location|this place)\b/.test(normalized) ||
     /^(park|parked|parking)\s+(the\s+|my\s+)?(car|vehicle)$/.test(normalized) ||
     /^(repark|repart|report)\s+(the\s+|my\s+)?(car|vehicle)$/.test(normalized) ||
@@ -420,12 +436,58 @@ function buildMemoryResponse(args: any): SkillResponse {
   }
 
   if (looksLikeParkingLookup(utterance) || (!isExplicitSaveCommand(utterance) && /\b(park|parking|car|vehicle|spot|gate|garage)\b/.test(normalized))) {
-    const parkingMemory = findMemoryByKeywords(existing, ['park', 'parked', 'parking', 'car', 'gate', 'level', 'floor', 'garage', 'spot']);
+    const wantsDirections = looksLikeDirectionsRequest(utterance);
+    const parkingMemory = wantsDirections
+      ? findLatestLocatedMemory(existing) || findMemoryByKeywords(existing, ['park', 'parked', 'parking', 'car', 'gate', 'level', 'floor', 'garage', 'spot', 'location'])
+      : findMemoryByKeywords(existing, ['park', 'parked', 'parking', 'car', 'gate', 'level', 'floor', 'garage', 'spot']);
     if (!parkingMemory) {
       return {
         spoken: 'I do not have a parking memory saved yet.',
         feedTitle: 'No Parking Memory',
         feedStory: 'Try saying “remember that I parked the car at gate number three.”',
+      };
+    }
+
+    if (wantsDirections && parkingMemory.location) {
+      const directionsUrl = mapsDirectionsUrl(parkingMemory.location);
+      const mapUrl = mapsSearchUrl(parkingMemory.location);
+      const directionsStory = [
+        `Location: ${formatLocation(parkingMemory.location)}`,
+        'Open Maps on your phone and search these coordinates, or copy the walking directions URL:',
+        directionsUrl,
+        `Map search: ${mapUrl}`,
+      ].join('\n');
+
+      return {
+        spoken: 'I found your saved parking location. I put the coordinates and walking directions URL in the Parking Directions card.',
+        feedTitle: 'Parking Directions',
+        feedStory: directionsStory,
+        embeddedResponses: [
+          {
+            type: 'notification',
+            content: {
+              title: 'Parking Directions',
+              body: 'Coordinates and walking directions are ready in your Trace feed.',
+              persist: true,
+              url: directionsUrl,
+            },
+          },
+          {
+            type: 'feed_item',
+            content: {
+              feed_type: 'skill',
+              title: 'Parking Directions',
+              story: directionsStory,
+              url: directionsUrl,
+              actions: [
+                {
+                  label: 'Open Walking Directions',
+                  url: directionsUrl,
+                },
+              ],
+            },
+          },
+        ],
       };
     }
 
@@ -543,15 +605,44 @@ async function processEvent(opts: {
 }) {
   const { event, user, requestId, callbackUrl } = opts;
 
-  // TODO: add your processing logic here (vision, audio, etc.)
-  // Then POST the results to callbackUrl.
+  const isPhotoEvent = event?.channel === 'media.photo' || event?.channel === 'instant.image';
+  const response = isPhotoEvent
+    ? buildMemoryResponse({
+        userId: user?.id,
+        user: {
+          ...user,
+          location: user?.location || event?.location,
+        },
+        utterance: event?.query || event?.utterance || 'Remember this parking photo',
+        items: event?.items || event?.media_items || event?.media || event?.item ? [event?.item || event?.media].filter(Boolean) : [],
+        context: {
+          ...(event?.context || {}),
+          hasImage: true,
+          imageDescription: event?.imageDescription || event?.image_description || event?.description,
+          location: event?.context?.location || event?.location || user?.location,
+        },
+      })
+    : {
+        spoken: `Processed your ${event?.channel || 'media'} event.`,
+        feedTitle: 'Parking Spot Memory',
+        feedStory: `Received ${event?.channel || 'media'} event.`,
+      };
 
   const responses = [
     {
       type: 'notification',
       content: {
-        title: 'Template Skill',
-        body: `Processed your ${event.channel} event.`,
+        title: response.feedTitle,
+        body: response.spoken,
+        persist: true,
+      },
+    },
+    {
+      type: 'feed_item',
+      content: {
+        feed_type: 'skill',
+        title: response.feedTitle,
+        story: response.feedStory,
       },
     },
   ];
