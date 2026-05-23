@@ -49,6 +49,12 @@ Expected response:
 Got it. I will remember where you parked: vehicle: car, gate three.
 ```
 
+If the payload includes location, the response also says:
+
+```text
+I saved the map location too.
+```
+
 Then fire:
 
 ```text
@@ -60,6 +66,8 @@ Expected response:
 ```text
 You told me: vehicle: car, gate three.
 ```
+
+The feed item should include Google Maps search and walking directions links when GPS coordinates were provided.
 
 ## 5. Test Photo Flow
 
@@ -113,10 +121,26 @@ This file is ignored by Git. Restarting the server should not erase saved memori
 Clear all memories.
 ```
 
-## 8. Approval Notes
+## 8. Location And Directions Check
+
+Make sure the dashboard skill requests:
+
+```text
+user.location.read
+```
+
+When Trace sends a location, saved memories include:
+
+```text
+Location: city/country and latitude/longitude
+Map: Google Maps search URL
+Walking directions: Google Maps directions URL
+```
+
+## 9. Approval Notes
 
 Use this in the review notes field:
 
 ```text
-Parking Spot Memory helps users save and recall where they parked using Trace glasses voice and active photo events. It supports instant.message and instant.image routing through MCP, returns spoken responses, and logs feed items for saved parking memories.
+Parking Spot Memory helps users save and recall where they parked using Trace glasses voice, active photo events, and optional location context. It supports instant.message and instant.image routing through MCP, returns spoken responses, logs feed items, and includes map/directions links when location permission is granted.
 ```

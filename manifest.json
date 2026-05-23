@@ -15,7 +15,8 @@
     "parking_memory": "Handle voice commands and active photos for remembering where the user parked their car or vehicle. Example phrases: 'remember that I parked at gate number three', 'save this parking spot', 'take a photo and remember this location', 'where did I park the car', 'find my parking spot', and 'clear all parking memories'."
   },
   "permissions": [
-    "user.profile.read"
+    "user.profile.read",
+    "user.location.read"
   ],
   "allowedTools": [],
   "dataRetention": {

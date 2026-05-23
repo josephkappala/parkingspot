@@ -18,6 +18,8 @@ The skill handles a practical glasses-first workflow:
 4. Ask where the car is later.
 5. Clear saved parking memories for the current server session.
 6. Extract structured details such as vehicle, gate, level, floor, row, spot, and landmark.
+7. Save GPS coordinates when Trace provides location context.
+8. Return Google Maps links for map search and walking directions.
 
 Example phrases:
 
@@ -127,6 +129,7 @@ Use these values when registering/importing the skill:
   - `instant.image`, active
 - Permissions:
   - `user.profile.read`
+  - `user.location.read`
 - Allowed tools: none
 
 Domain description:
@@ -161,6 +164,14 @@ curl -s http://localhost:3001/mcp \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"handle_dialog","arguments":{"utterance":"Where did I park the car?","userId":"demo-user"}}}'
 ```
 
+Save a parking memory with mock GPS location:
+
+```bash
+curl -s http://localhost:3001/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"handle_dialog","arguments":{"utterance":"Remember that I parked the car at gate number three.","userId":"demo-user","user":{"id":"demo-user","location":{"latitude":12.9716,"longitude":77.5946,"city":"Bengaluru","country":"IN"}}}}}'
+```
+
 Mock an active photo memory:
 
 ```bash
@@ -184,6 +195,7 @@ Use this order for the most reliable demo:
 
 - Memories are stored in `data/parking-memories.json` and survive server restarts.
 - The skill uses Trace-provided `imageDescription` for photo memory descriptions.
+- GPS capture depends on the user granting `user.location.read` and Trace including location in the MCP payload.
 - Free tunnel URLs may expire. Use a deployed HTTPS host for stable demos.
 - The current implementation is optimized for a buildathon demo, not long-term production storage.
 

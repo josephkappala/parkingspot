@@ -25,6 +25,13 @@ type ParkingDetails = {
   landmark?: string;
 };
 
+type GeoLocation = {
+  latitude: number;
+  longitude: number;
+  city?: string;
+  country?: string;
+};
+
 type MemoryEntry = {
   id: string;
   type: 'text' | 'photo';
@@ -33,6 +40,7 @@ type MemoryEntry = {
   imageUrl?: string;
   contextNote?: string;
   details?: ParkingDetails;
+  location?: GeoLocation;
 };
 
 type SkillResponse = {
@@ -76,6 +84,21 @@ function saveUserMemories(userId: string, entries: MemoryEntry[]) {
 
 function getUserId(args: any) {
   return args?.user?.id || args?.userId || 'demo-user';
+}
+
+function getUserLocation(args: any): GeoLocation | undefined {
+  const location = args?.user?.location || args?.context?.location;
+  const latitude = Number(location?.latitude ?? location?.lat);
+  const longitude = Number(location?.longitude ?? location?.lng ?? location?.lon);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return undefined;
+
+  return {
+    latitude,
+    longitude,
+    city: location?.city,
+    country: location?.country,
+  };
 }
 
 function createMemoryId() {
@@ -158,26 +181,51 @@ function formatDetails(details?: ParkingDetails) {
   return parts.join(', ');
 }
 
+function formatLocation(location?: GeoLocation) {
+  if (!location) return '';
+  const place = [location.city, location.country].filter(Boolean).join(', ');
+  const coords = `${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}`;
+  return place ? `${place} (${coords})` : coords;
+}
+
+function mapsSearchUrl(location: GeoLocation) {
+  return `https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`;
+}
+
+function mapsDirectionsUrl(location: GeoLocation) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${location.latitude},${location.longitude}&travelmode=walking`;
+}
+
+function formatMapLinks(location?: GeoLocation) {
+  if (!location) return '';
+  return [
+    `Map: ${mapsSearchUrl(location)}`,
+    `Walking directions: ${mapsDirectionsUrl(location)}`,
+  ].join('\n');
+}
+
 function formatMemoryForRecall(entry: MemoryEntry) {
   const details = formatDetails(entry.details);
+  const location = formatLocation(entry.location);
   if (entry.type === 'photo') {
     const context = entry.contextNote ? ` Context: ${entry.contextNote}` : '';
-    return `Photo: ${entry.text}.${context}${details ? ` Details: ${details}.` : ''}`;
+    return `Photo: ${entry.text}.${context}${details ? ` Details: ${details}.` : ''}${location ? ` Location: ${location}.` : ''}`;
   }
 
-  return details ? `${entry.text}. Details: ${details}.` : entry.text;
+  return `${details ? `${entry.text}. Details: ${details}.` : entry.text}${location ? ` Location: ${location}.` : ''}`;
 }
 
 function formatParkingMemory(entry: MemoryEntry) {
   const details = formatDetails(entry.details);
-  if (details) return details;
+  const location = entry.location ? ' I also saved the map location.' : '';
+  if (details) return `${details}${location}`.trim();
 
   if (entry.type === 'photo') {
     const context = entry.contextNote ? ` ${entry.contextNote}.` : '';
-    return `I saved a photo memory: ${entry.text}.${context}`;
+    return `I saved a photo memory: ${entry.text}.${context}${location}`;
   }
 
-  return entry.text;
+  return `${entry.text}.${location}`.trim();
 }
 
 function findMemoryByKeywords(entries: MemoryEntry[], keywords: string[]) {
@@ -227,6 +275,7 @@ function buildPhotoContextResponse(args: any): SkillResponse | null {
   if (pendingContext?.context_key !== PHOTO_CONTEXT_KEY) return null;
 
   const userId = getUserId(args);
+  const location = getUserLocation(args);
   const utterance = String(args?.utterance || '').trim();
   const memoryId = pendingContext?.context_payload?.memory_id;
   const existing = memoriesByUser.get(userId) || [];
@@ -252,12 +301,19 @@ function buildPhotoContextResponse(args: any): SkillResponse | null {
 
   target.contextNote = cleanMemoryText(utterance) || utterance;
   target.details = mergeParkingDetails(target.details, extractParkingDetails(target.contextNote));
+  target.location = target.location || location;
   saveUserMemories(userId, existing);
 
   return {
     spoken: 'Got it. I added that parking context to the photo memory.',
     feedTitle: 'Parking Context Added',
-    feedStory: `${target.text}\nContext: ${target.contextNote}\nDetails: ${formatDetails(target.details) || 'none'}`,
+    feedStory: [
+      target.text,
+      `Context: ${target.contextNote}`,
+      `Details: ${formatDetails(target.details) || 'none'}`,
+      target.location ? `Location: ${formatLocation(target.location)}` : null,
+      formatMapLinks(target.location),
+    ].filter(Boolean).join('\n'),
     embeddedResponses: [],
   };
 }
@@ -267,6 +323,7 @@ function buildPhotoMemoryResponse(args: any): SkillResponse | null {
   if (!imageItem && !args?.context?.hasImage) return null;
 
   const userId = getUserId(args);
+  const location = getUserLocation(args);
   const utterance = String(args?.utterance || '').trim();
   const imageDescription = shortText(getImageDescription(args), 170);
   const imageUrl = imageItem?.url;
@@ -281,6 +338,7 @@ function buildPhotoMemoryResponse(args: any): SkillResponse | null {
       extractParkingDetails(imageDescription),
       utterance ? extractParkingDetails(utterance) : undefined
     ),
+    location,
     createdAt: new Date().toISOString(),
   };
 
@@ -290,6 +348,8 @@ function buildPhotoMemoryResponse(args: any): SkillResponse | null {
     `I see: ${imageDescription}`,
     entry.contextNote ? `User context: ${entry.contextNote}` : null,
     formatDetails(entry.details) ? `Details: ${formatDetails(entry.details)}` : null,
+    location ? `Location: ${formatLocation(location)}` : null,
+    formatMapLinks(location),
     imageUrl ? `Image: ${imageUrl}` : null,
   ].filter(Boolean).join('\n');
 
@@ -322,7 +382,7 @@ function buildPhotoMemoryResponse(args: any): SkillResponse | null {
   }
 
   return {
-    spoken: `Parking photo saved. I see: ${imageDescription}.${entry.contextNote ? '' : ' Anything you want me to remember about this spot?'}`,
+    spoken: `Parking photo saved. I see: ${imageDescription}.${location ? ' I saved the map location too.' : ''}${entry.contextNote ? '' : ' Anything you want me to remember about this spot?'}`,
     feedTitle: 'Parking Photo Saved',
     feedStory,
     embeddedResponses: responses,
@@ -338,6 +398,7 @@ function buildMemoryResponse(args: any): SkillResponse {
 
   const utterance = String(args?.utterance || '').trim();
   const userId = getUserId(args);
+  const location = getUserLocation(args);
   const existing = memoriesByUser.get(userId) || [];
   const normalized = utterance.toLowerCase();
 
@@ -371,7 +432,10 @@ function buildMemoryResponse(args: any): SkillResponse {
     return {
       spoken: `You told me: ${formatParkingMemory(parkingMemory)}.`,
       feedTitle: 'Parking Memory',
-      feedStory: formatMemoryForRecall(parkingMemory),
+      feedStory: [
+        formatMemoryForRecall(parkingMemory),
+        formatMapLinks(parkingMemory.location),
+      ].filter(Boolean).join('\n'),
     };
   }
 
@@ -406,6 +470,7 @@ function buildMemoryResponse(args: any): SkillResponse {
     type: 'text',
     text: memoryText,
     details: extractParkingDetails(memoryText),
+    location,
     createdAt: new Date().toISOString()
   };
   saveUserMemories(userId, [...existing, entry]);
@@ -413,10 +478,15 @@ function buildMemoryResponse(args: any): SkillResponse {
   const details = formatDetails(entry.details);
   return {
     spoken: looksLikeParkingSave(utterance)
-      ? `Got it. I will remember where you parked: ${details || memoryText}.`
+      ? `Got it. I will remember where you parked: ${details || memoryText}.${location ? ' I saved the map location too.' : ''}`
       : `Got it. I will remember: ${memoryText}.`,
     feedTitle: looksLikeParkingSave(utterance) ? 'Parking Memory Saved' : 'Memory Saved',
-    feedStory: details ? `${memoryText}\nDetails: ${details}` : memoryText,
+    feedStory: [
+      memoryText,
+      details ? `Details: ${details}` : null,
+      location ? `Location: ${formatLocation(location)}` : null,
+      formatMapLinks(location),
+    ].filter(Boolean).join('\n'),
   };
 }
 
@@ -499,6 +569,7 @@ app.post('/mcp', async (req: Request, res: Response) => {
     utterance: params?.arguments?.utterance,
     userId: params?.arguments?.userId || params?.arguments?.user?.id,
     hasImage: Boolean(params?.arguments?.items?.length || params?.arguments?.context?.hasImage),
+    hasLocation: Boolean(getUserLocation(params?.arguments || {})),
     pendingContext: params?.arguments?.pending_context?.context_key,
   }));
 
